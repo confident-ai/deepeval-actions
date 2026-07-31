@@ -74,6 +74,20 @@ tools:
       repositories:
         - ${{ inputs.repoName }}
 
+# Ships the agent-written artifact proposals to the report-result job. The file
+# deliberately lives outside /tmp/gh-aw/agent/: that directory is swept into the
+# long-retention `agent` artifact, while this keeps customer-derived JSON in its
+# own short-lived artifact.
+post-steps:
+  - name: Upload tracing artifact proposals
+    if: always()
+    uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    with:
+      name: tracing-artifacts
+      path: /tmp/gh-aw/tracing-artifacts/artifacts.json
+      if-no-files-found: ignore
+      retention-days: 1
+
 # Deterministic result callback: runs after safe_outputs so the real PR URL is available.
 jobs:
   report-result:
@@ -83,12 +97,19 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: read
     env:
       CALLBACK_BASE_URL: ${{ inputs.callbackBaseUrl }}
       JOB_ID: ${{ inputs.jobId }}
       PR_URL: ${{ needs.safe_outputs.outputs.created_pr_url }}
       AGENT_RESULT: ${{ needs.agent.result }}
     steps:
+      - name: Download tracing artifact proposals
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tracing-artifacts
+          path: /tmp/tracing-artifacts
       - name: Report tracing outcome to Confident
         run: |
           if [ -n "$PR_URL" ]; then
@@ -100,6 +121,15 @@ jobs:
           fi
           OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=confident-tracing" | jq -r '.value')
+          # A missing, unparsable, or oversized artifacts file degrades to no
+          # `artifacts` key — it must never fail the status callback
+          # (jq --slurpfile hard-fails on invalid input, hence the pre-checks).
+          # The size ceiling is MAX_RAW_SERIALIZED_BYTES in confident-cloud
+          # (apps/backend/src/utils/integrations/github/tracing-artifacts.ts):
+          # anything larger is rejected there, so drop it here instead.
+          ARTIFACTS_FILE=/tmp/tracing-artifacts/artifacts.json
+          jq -e . "$ARTIFACTS_FILE" >/dev/null 2>&1 || ARTIFACTS_FILE=/dev/null
+          [ "$ARTIFACTS_FILE" = /dev/null ] || [ "$(wc -c < "$ARTIFACTS_FILE")" -le 262144 ] || ARTIFACTS_FILE=/dev/null
           curl -sS -X POST "${CALLBACK_BASE_URL}/v1/github-tracing/callback" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
@@ -107,7 +137,10 @@ jobs:
                   --arg status "$STATUS" \
                   --arg prUrl "$PR_URL" \
                   --arg oidc "$OIDC" \
-                  '{jobId:$jobId, status:$status, oidc:$oidc} + (if $prUrl == "" then {} else {prUrl:$prUrl} end)')"
+                  --slurpfile artifacts "$ARTIFACTS_FILE" \
+                  '{jobId:$jobId, status:$status, oidc:$oidc}
+                   + (if $prUrl == "" then {} else {prUrl:$prUrl} end)
+                   + (if ($artifacts[0] // null) == null then {} else {artifacts:$artifacts[0]} end)')"
 
 timeout-minutes: 45
 strict: true
@@ -136,6 +169,7 @@ Inspect `./target-repo`. Confirm it contains an AI application: LLM API calls, a
 1. Load the skill from inside `./target-repo`: `npx --yes skills add confident-ai/deepeval --skill deepeval-tracing`.
 2. Follow the `deepeval-tracing` skill: detect the framework, model provider, and agent SDK in use; **prefer a native integration** over manual instrumentation; fall back to the `@observe` decorator only where no integration applies. Assign meaningful span types (`llm`, `retriever`, `tool`, `agent`) and capture inputs/outputs. Do **not** capture secrets.
 3. Wire configuration to read `CONFIDENT_API_KEY` from the environment (add a `.env.example` entry if the repo uses one). **Never** hard-code an API key into the source or the PR.
+4. **Test-case association (only when applicable):** if the app exposes a callable HTTP endpoint serving the LLM path (an API route Confident could POST evaluation inputs to), also make that endpoint accept an **optional** `n` field in its request payload and set it as the test-case id on the trace produced for that request, so platform-run evals link each test case to its trace (the deepeval-tracing skill covers the exact API). If no such endpoint exists, skip this — tracing-only is the correct fallback.
 
 ## Step 3 — Sanity-check before opening a PR
 
@@ -144,9 +178,47 @@ Run a lightweight check that your edits did not break the code:
 - Python: `python -m py_compile` on the changed files (or `python -c "import <module>"` for touched modules).
 - Node/TS: the repo's own typecheck/build, only if it runs quickly.
 
-If the check fails and you cannot fix it within scope, make **no PR** and stop. A broken PR is worse than none.
+If the check fails and you cannot fix it within scope, open **no PR** (skip Step 5) — a broken PR is worse than none. Still write the artifact proposals in Step 4.
 
-## Step 4 — Open the pull request
+## Step 4 — Write artifact proposals
+
+From what you learned reading the code, propose starter evaluation artifacts for the user's Confident AI project. Write **exactly one strict-JSON file** to `/tmp/gh-aw/tracing-artifacts/artifacts.json` (`mkdir -p /tmp/gh-aw/tracing-artifacts` first). The file is delivered to Confident automatically — it is **not** part of the PR.
+
+Top-level shape (omit any section that does not apply; if none apply, do not write the file at all):
+
+```json
+{
+  "version": 1,
+  "metricCollection": {
+    "name": "...",
+    "multiTurn": false,
+    "metricSettings": [{ "name": "<allow-list name>", "threshold": 0.7 }]
+  },
+  "dataset": { "alias": "...", "multiTurn": false, "goldens": [] },
+  "aiConnection": {
+    "name": "...",
+    "endpoint": "https://...",
+    "payload": {},
+    "headers": [{ "key": "..." }],
+    "queryParams": [{ "key": "..." }],
+    "actualOutputJSONKeyPath": ["..."]
+  }
+}
+```
+
+Rules:
+
+- **Metric collection** — pick **3–6** metrics that fit the app, `name` strictly from the allow-list below (anything else is dropped server-side). Use the multi-turn list with `"multiTurn": true` for conversation-loop apps, the single-turn list otherwise. `threshold` (0–1) is optional.
+  - Single-turn: Answer Relevancy, Argument Correctness, Bias, Contextual Precision, Contextual Recall, Contextual Relevancy, Exact Match, Faithfulness, Hallucination, Image Coherence, Image Editing, Image Helpfulness, Image Reference, Misuse, Non-Advice, PII Leakage, Pattern Match, Plan Adherence, Plan Quality, Prompt Alignment, Role Violation, Step Efficiency, Summarization, Task Completion, Tool Correctness, Toxicity
+  - Multi-turn: Conversation Completeness, Goal Accuracy, Knowledge Retention, Role Adherence, Topic Adherence, Turn Contextual Precision, Turn Contextual Recall, Turn Contextual Relevancy, Turn Faithfulness, Turn Relevancy
+  - Rough fit: RAG → Faithfulness / Answer Relevancy / Contextual\*; agents and tool use → Tool Correctness / Task Completion; chatbots → the multi-turn list.
+- **Dataset** (only if applicable) — up to **15** goldens with realistic user inputs derived from the code, tests, or README. Single-turn golden: `{ "input", "expectedOutput"?, "context"?: [strings], "retrievalContext"?: [strings] }`. Multi-turn golden (with `"multiTurn": true`): `{ "scenario", "expectedOutcome"?, "userDescription"?, "turns"?: [{ "role": "user"|"assistant", "content": "..." }] }`, at most 20 turns. Keep `input`/`expectedOutput`/`scenario`/`expectedOutcome` under 4000 characters and turn contents / context entries under 2000 characters each.
+- **AI connection** — name it after the repo or app. Include `endpoint` **only** when a full URL is determinable from the code or config (never invent placeholder hosts). When an endpoint exists, mirror its request body in `payload`, include an `"n"` key in it (Confident's test-case id passthrough, matching the wiring from Step 2), and set `actualOutputJSONKeyPath` to the response field holding the answer. `headers` and `queryParams` carry **names only** — never their values (that is where credentials live; the user fills values in the platform UI, and a value here would be rejected). Omit anything you cannot derive.
+- Names and aliases ≤100 characters; at most 10 metrics; whole file under 256KB (larger files are dropped before they reach Confident). **Never** copy secrets, API keys, `.env` values, or personal data into this file — including inside `payload`.
+
+_Maintenance note: the allow-list and JSON shape mirror `packages/shared/src/catalogs/*-metrics.ts` and `apps/backend/src/utils/integrations/github/tracing-artifacts.ts` in confident-cloud — keep them in sync._
+
+## Step 5 — Open the pull request
 
 Open **one** PR from a fixed branch named `confident-ai/add-tracing` (re-running this workflow must update that same PR, never open a duplicate). The PR body should cover:
 
@@ -156,7 +228,7 @@ Open **one** PR from a fixed branch named `confident-ai/add-tracing` (re-running
 
 ## Reporting
 
-You do **not** report the result yourself. Once your run finishes, Confident is notified automatically by a deterministic workflow job that reads the outcome — whether a PR was opened, there was nothing to instrument, or the run failed. Your only responsibility is to make the correct edits and open the single PR (or open no PR) per the steps above.
+You do **not** report the result yourself. Once your run finishes, Confident is notified automatically by a deterministic workflow job that reads the outcome — whether a PR was opened, there was nothing to instrument, or the run failed — and delivers the artifact proposals file alongside it. Your only responsibility is to make the correct edits, write the artifact proposals, and open the single PR (or open no PR) per the steps above.
 
 ---
 
