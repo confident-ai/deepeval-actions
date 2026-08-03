@@ -169,7 +169,7 @@ Inspect `./target-repo`. Confirm it contains an AI application: LLM API calls, a
 1. Load the skill from inside `./target-repo`: `npx --yes skills add confident-ai/deepeval --skill deepeval-tracing`.
 2. Follow the `deepeval-tracing` skill: detect the framework, model provider, and agent SDK in use; **prefer a native integration** over manual instrumentation; fall back to the `@observe` decorator only where no integration applies. Assign meaningful span types (`llm`, `retriever`, `tool`, `agent`) and capture inputs/outputs. Do **not** capture secrets.
 3. Wire configuration to read `CONFIDENT_API_KEY` from the environment (add a `.env.example` entry if the repo uses one). **Never** hard-code an API key into the source or the PR.
-4. **Test-case association (only when applicable):** if the app exposes a callable HTTP endpoint serving the LLM path (an API route Confident could POST evaluation inputs to), also make that endpoint accept an **optional** `n` field in its request payload and set it as the test-case id on the trace produced for that request, so platform-run evals link each test case to its trace (the deepeval-tracing skill covers the exact API). If no such endpoint exists, skip this — tracing-only is the correct fallback.
+4. **Test-case association (only when applicable):** if the app exposes a callable HTTP endpoint serving the LLM path (an API route Confident could POST evaluation inputs to), also make that endpoint accept an **optional** `testCaseId` field in its request payload and set it as the test-case id on the trace produced for that request, so platform-run evals link each test case to its trace (the deepeval-tracing skill covers the exact API). The field must be named `testCaseId` — that is the key Confident sends. If no such endpoint exists, skip this — tracing-only is the correct fallback.
 
 ## Step 3 — Sanity-check before opening a PR
 
@@ -198,7 +198,7 @@ Top-level shape (omit any section that does not apply; if none apply, do not wri
   "aiConnection": {
     "name": "...",
     "endpoint": "https://...",
-    "payload": {},
+    "payload": { "question": "golden.input", "testCaseId": "confident.testCaseId" },
     "headers": [{ "key": "..." }],
     "queryParams": [{ "key": "..." }],
     "actualOutputJSONKeyPath": ["..."]
@@ -213,7 +213,12 @@ Rules:
   - Multi-turn: Conversation Completeness, Goal Accuracy, Knowledge Retention, Role Adherence, Topic Adherence, Turn Contextual Precision, Turn Contextual Recall, Turn Contextual Relevancy, Turn Faithfulness, Turn Relevancy
   - Rough fit: RAG → Faithfulness / Answer Relevancy / Contextual\*; agents and tool use → Tool Correctness / Task Completion; chatbots → the multi-turn list.
 - **Dataset** (only if applicable) — up to **15** goldens with realistic user inputs derived from the code, tests, or README. Single-turn golden: `{ "input", "expectedOutput"?, "context"?: [strings], "retrievalContext"?: [strings] }`. Multi-turn golden (with `"multiTurn": true`): `{ "scenario", "expectedOutcome"?, "userDescription"?, "turns"?: [{ "role": "user"|"assistant", "content": "..." }] }`, at most 20 turns. Keep `input`/`expectedOutput`/`scenario`/`expectedOutcome` under 4000 characters and turn contents / context entries under 2000 characters each.
-- **AI connection** — name it after the repo or app. Include `endpoint` **only** when a full URL is determinable from the code or config (never invent placeholder hosts). When an endpoint exists, mirror its request body in `payload`, include an `"n"` key in it (Confident's test-case id passthrough, matching the wiring from Step 2), and set `actualOutputJSONKeyPath` to the response field holding the answer. `headers` and `queryParams` carry **names only** — never their values (that is where credentials live; the user fills values in the platform UI, and a value here would be rejected). Omit anything you cannot derive.
+- **AI connection** — name it after the repo or app. Include `endpoint` **only** when a full URL is determinable from the code or config (never invent placeholder hosts), and it must be `https` with a publicly resolvable host — anything else is dropped server-side. When an endpoint exists, mirror its request body in `payload` and set `actualOutputJSONKeyPath` to the response field holding the answer. `headers` and `queryParams` carry **names only** — never their values (that is where credentials live; the user fills values in the platform UI, and a value here would be rejected). Omit anything you cannot derive.
+  - **Payload placeholders.** In `payload`, use these exact strings as *values* where the request needs live data; Confident substitutes them per test case at run time. A string that isn't a placeholder is sent literally.
+    - `"golden.input"` — the user question/prompt. Also available: `golden.expected_output`, `golden.context`, `golden.retrieval_context`, `golden.actual_output`, `golden.expected_tools`, `golden.tools_called`, `golden.additional_metadata`.
+    - `"confident.testCaseId"` — the test-case id, matching the `testCaseId` field wired in Step 2. Also available: `confident.turnId`, `confident.prompts`, `confident.state`, `confident.hyperparameters`.
+    - Multi-turn apps: `conversationalGolden.turns`, `conversationalGolden.scenario`, `conversationalGolden.expected_outcome`, `conversationalGolden.context`, `conversationalGolden.user_description`.
+    - Example for an endpoint taking `{"question": "...", "testCaseId": "..."}` → `"payload": { "question": "golden.input", "testCaseId": "confident.testCaseId" }`.
 - Names and aliases ≤100 characters; at most 10 metrics; whole file under 256KB (larger files are dropped before they reach Confident). **Never** copy secrets, API keys, `.env` values, or personal data into this file — including inside `payload`.
 
 _Maintenance note: the allow-list and JSON shape mirror `packages/shared/src/catalogs/*-metrics.ts` and `apps/backend/src/utils/integrations/github/tracing-artifacts.ts` in confident-cloud — keep them in sync._
