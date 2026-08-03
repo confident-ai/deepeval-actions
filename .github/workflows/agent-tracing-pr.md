@@ -144,7 +144,7 @@ jobs:
 
 timeout-minutes: 45
 strict: true
-engine: claude
+engine: codex
 ---
 
 # Tracing PR Agent
