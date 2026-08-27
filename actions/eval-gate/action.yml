@@ -1,15 +1,16 @@
 name: "Confident PR Eval Gate"
-description: "Runs your LLM app over a pinned Confident dataset and submits the outputs to Confident, which scores them and posts the PR check-run. Set up your app's runtime (Python + dependencies) in earlier steps; this action runs the pinned runner against it."
+description: "Runs the Confident gates configured for this repository (metric evals over a pinned dataset, and/or a frozen adversarial attack suite), submits the outputs to Confident, which scores them and posts the PR check-runs. Set up your app's runtime (Python + dependencies) in earlier steps; this action runs the pinned runner against it."
 
 inputs:
   base_url:
     description: "Confident API base URL (region-specific)."
     required: true
   dataset_alias:
-    description: "Alias of the pinned dataset to evaluate against."
-    required: true
+    description: "Fallback only: dataset alias used when the backend has no gate-config endpoint (older/on-prem deployments). Configured gates come from Confident."
+    required: false
+    default: ""
   dataset_version:
-    description: "Dataset version to pull."
+    description: "Fallback only: dataset version used with dataset_alias."
     required: false
     default: "latest"
   confident_api_key:
