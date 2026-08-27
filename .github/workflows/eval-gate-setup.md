@@ -127,7 +127,7 @@ jobs:
 
 timeout-minutes: 45
 strict: true
-engine: claude
+engine: codex
 ---
 
 # Eval Gate Setup Agent
