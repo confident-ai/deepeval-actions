@@ -113,6 +113,32 @@ post-steps:
 
 # Deterministic result callback: runs after safe_outputs so the real PR URL is available.
 jobs:
+  register-run:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    env:
+      API_BASE_URL: ${{ inputs.apiBaseUrl }}
+      JOB_ID: ${{ inputs.jobId }}
+    steps:
+      - name: Register setup run
+        run: |
+          OIDC=$(curl -sS --retry 3 --retry-delay 2 --retry-connrefused \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=confident-eval-gate-setup" | jq -r '.value')
+          [ -n "$OIDC" ] && [ "$OIDC" != "null" ]
+          HTTP_CODE=$(curl -sS -X POST "${API_BASE_URL}/v1/eval-gate/setup-run" \
+            --retry 5 --retry-delay 5 --retry-connrefused \
+            -o /tmp/eval-gate-setup-run-response.json -w '%{http_code}' \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg jobId "$JOB_ID" --arg oidc "$OIDC" \
+              '{jobId:$jobId, oidc:$oidc}')")
+          echo "Confident setup-run endpoint responded $HTTP_CODE: $(cat /tmp/eval-gate-setup-run-response.json)"
+          case "$HTTP_CODE" in
+            2*) ;;
+            *) exit 1 ;;
+          esac
+
   report-result:
     needs: [agent, safe_outputs]
     if: always()
@@ -138,8 +164,13 @@ jobs:
           else
             STATUS=FAILED
           fi
-          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          OIDC=$(curl -sS --retry 3 --retry-delay 2 --retry-connrefused \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=confident-eval-gate-setup" | jq -r '.value')
+          if [ -z "$OIDC" ] || [ "$OIDC" = "null" ]; then
+            echo "::error::Could not obtain an OIDC token; the setup outcome was not reported to Confident"
+            exit 1
+          fi
           # A missing, unparsable, or oversized artifacts file degrades to no
           # `artifacts` key — it must never fail the status callback
           # (jq --slurpfile hard-fails on invalid input, hence the pre-checks).
@@ -149,7 +180,9 @@ jobs:
           ARTIFACTS_FILE=/tmp/eval-gate-artifacts/artifacts.json
           jq -e . "$ARTIFACTS_FILE" >/dev/null 2>&1 || ARTIFACTS_FILE=/dev/null
           [ "$ARTIFACTS_FILE" = /dev/null ] || [ "$(wc -c < "$ARTIFACTS_FILE")" -le 262144 ] || ARTIFACTS_FILE=/dev/null
-          curl -sS -X POST "${API_BASE_URL}/v1/eval-gate/callback" \
+          HTTP_CODE=$(curl -sS -X POST "${API_BASE_URL}/v1/eval-gate/callback" \
+            --retry 5 --retry-delay 5 --retry-connrefused \
+            -o /tmp/eval-gate-callback-response.json -w '%{http_code}' \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
                   --arg jobId "$JOB_ID" \
@@ -159,7 +192,15 @@ jobs:
                   --slurpfile artifacts "$ARTIFACTS_FILE" \
                   '{jobId:$jobId, status:$status, oidc:$oidc}
                    + (if $prUrl == "" then {} else {prUrl:$prUrl} end)
-                   + (if ($artifacts[0] // null) == null then {} else {artifacts:$artifacts[0]} end)')"
+                   + (if ($artifacts[0] // null) == null then {} else {artifacts:$artifacts[0]} end)')")
+          echo "Confident callback responded $HTTP_CODE: $(cat /tmp/eval-gate-callback-response.json)"
+          case "$HTTP_CODE" in
+            2*) ;;
+            *)
+              echo "::error::Confident did not accept the setup outcome (HTTP $HTTP_CODE); the gate is still marked in-flight"
+              exit 1
+              ;;
+          esac
 
 timeout-minutes: 45
 strict: true
