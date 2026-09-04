@@ -266,9 +266,12 @@ jobs:
           python-version: "3.12" # match the version the repo targets
       - name: Install dependencies
         run: pip install -r requirements.txt # match the repo (poetry/uv/etc.)
-      # Managed by Confident — keep this step and its inputs as-is.
+      # Managed by Confident — keep this step, its env and its inputs as-is.
       - name: Confident PR Eval Gate
         uses: confident-ai/deepeval-actions/actions/eval-gate@v1
+        env:
+          # Optional: OpenAI key enabling DeepTeam's code scan when the risk gate regresses; unset = skip.
+          CONFIDENT_SCAN_API_KEY: __SECRET_CONFIDENT_SCAN_API_KEY__
         with:
           base_url: "${{ inputs.apiBaseUrl }}"
           dataset_alias: "${{ inputs.datasetAlias }}"
@@ -281,7 +284,7 @@ If the pinned dataset alias above is empty (risk-only or bootstrap setup), omit 
 **Secret placeholders:** wherever this spec shows a `__SECRET_<NAME>__` placeholder, write the standard GitHub Actions secret reference for `<NAME>` in the file you create — the usual `secrets.<NAME>` lookup wrapped in dollar-double-braces (the exact syntax every workflow uses). Reference the customer's own app secrets the same way. Never hard-code a secret value.
 
 Rules for the workflow:
-- Keep the final `Confident PR Eval Gate` step **exactly** as shown — same `uses:` ref and the four `with:` inputs with the values above, with `confident_api_key` set to the `CONFIDENT_API_KEY` secret reference. Confident already set the `CONFIDENT_API_KEY` repo secret; reference it, never create or hard-code it.
+- Keep the final `Confident PR Eval Gate` step **exactly** as shown — same `uses:` ref, its step-level `env:` block (the `CONFIDENT_SCAN_API_KEY` reference stays on this step only, never job-level), and the four `with:` inputs with the values above, with `confident_api_key` set to the `CONFIDENT_API_KEY` secret reference. Confident already set the `CONFIDENT_API_KEY` repo secret; reference it, never create or hard-code it.
 - Set up the app's real runtime: the right Python version and the repo's actual dependency-install command (pip/poetry/uv — detect it). The runner imports the app, so its dependencies must be installed in this job.
 - Put every environment variable / secret the app needs to run under the job-level `env:`, each set to its secret reference (per the placeholder note above), inferring the names from the repo. Do not invent values.
 
@@ -345,7 +348,7 @@ _Maintenance note: the allow-list and JSON shape mirror `packages/shared/src/cat
 Open **one** PR from a fixed branch named `confident/eval-gate-setup` (re-running this workflow must update that same PR, never open a duplicate). **Always open the PR** — even in the stub-fallback case — so the gate is configured. The PR body should cover:
 
 - what `run()` calls and how the input is mapped;
-- **a checklist of repository secrets the customer must set** for the gate to run (their app's runtime secrets that you referenced in the workflow `env:`), noting `CONFIDENT_API_KEY` is already set by Confident;
+- **a checklist of repository secrets the customer must set** for the gate to run (their app's runtime secrets that you referenced in the workflow `env:`), noting `CONFIDENT_API_KEY` is already set by Confident and that `CONFIDENT_SCAN_API_KEY` is optional (an OpenAI key that enables inline code-scan comments when the risk gate regresses);
 - if you shipped a stub `run()`: exactly what you couldn't determine and what the customer must fill in;
 - a note that the changes are best-effort and should be reviewed before merging.
 

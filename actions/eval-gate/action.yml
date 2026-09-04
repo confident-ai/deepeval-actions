@@ -29,6 +29,7 @@ runs:
       env:
         CONFIDENT_BASE_URL: ${{ inputs.base_url }}
         CONFIDENT_API_KEY: ${{ inputs.confident_api_key }}
+        CONFIDENT_RISK_RUN_ID_FILE: ${{ runner.temp }}/confident-eval-gate/risk-run-id
         DATASET_ALIAS: ${{ inputs.dataset_alias }}
         DATASET_VERSION: ${{ inputs.dataset_version }}
         REPO: ${{ github.repository }}
@@ -36,3 +37,14 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         BASE_BRANCH: ${{ github.base_ref || github.ref_name }}
+    # Advisory code scan on risk-gate regressions; needs CONFIDENT_SCAN_API_KEY in
+    # the env and always exits 0.
+    - name: Confident PR Code Scan
+      if: ${{ !cancelled() }}
+      continue-on-error: true
+      shell: bash
+      run: python "${{ github.action_path }}/scan.py"
+      env:
+        CONFIDENT_BASE_URL: ${{ inputs.base_url }}
+        CONFIDENT_API_KEY: ${{ inputs.confident_api_key }}
+        CONFIDENT_RISK_RUN_ID_FILE: ${{ runner.temp }}/confident-eval-gate/risk-run-id

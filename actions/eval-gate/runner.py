@@ -132,6 +132,23 @@ def run_metrics_gate(run, gate: Dict[str, object]) -> bool:
     return True
 
 
+def record_risk_run_id(resp: Dict[str, object]) -> None:
+    # Hands the run id to scan.py (same job) for PR runs only: branch baselines
+    # never scan, so scan.py must not wait on them.
+    path = os.environ.get("CONFIDENT_RISK_RUN_ID_FILE")
+    if not path or git_context()["prNumber"] is None:
+        return
+    try:
+        data = resp.get("data")
+        run_id = data.get("evalGateRunId") if isinstance(data, dict) else None
+        if run_id:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(str(run_id))
+    except Exception as e:
+        print("eval-gate: could not record risk run id: " + str(e), file=sys.stderr)
+
+
 def run_risk_gate(run, gate: Dict[str, object]) -> bool:
     # An attack that makes run() raise becomes an errored entry, not a CI
     # failure — the backend excludes errored attacks from pass rates.
@@ -162,6 +179,7 @@ def run_risk_gate(run, gate: Dict[str, object]) -> bool:
         print("eval-gate: failed to submit risk results: " + str(e), file=sys.stderr)
         return False
     print(json.dumps(resp))
+    record_risk_run_id(resp)
     return True
 
 
