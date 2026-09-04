@@ -46,6 +46,14 @@ PROVIDER_PIP_EXTRA = {
     "claude-code": "claude-code",
     "cursor": "cursor",
 }
+# The backend re-uses one gate run per head sha, so a re-run legitimately finds the
+# section already there; only "failed" means the findings did not reach the PR.
+OUTCOME_MESSAGE = {
+    "posted": "posted to the pull request",
+    "already_posted": "already posted by an earlier run, nothing to do",
+    "stale": "a newer commit superseded this run, not posted",
+    "failed": "the backend could not post them",
+}
 DEFAULT_EXCLUDES = [
     "tests/*",
     "test/*",
@@ -358,7 +366,10 @@ def post_findings(
         "POST", "/v1/eval-gate/runs/" + run_id + "/scan-findings", payload
     )
     if status == 200:
-        log("submitted " + str(len(findings)) + " finding(s) (posted=" + str(data.get("posted")) + ")")
+        log(
+            "submitted " + str(len(findings)) + " finding(s) — "
+            + OUTCOME_MESSAGE.get(str(data.get("outcome")), "unknown outcome")
+        )
     else:
         log("scan-findings answered " + str(status))
 
