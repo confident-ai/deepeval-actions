@@ -24,6 +24,9 @@ ENGINE_TIMEOUT_SECONDS = 15 * 60
 MAX_FILES = 50
 MAX_CHUNKS = 40
 DEEPTEAM_VERSION = "1.0.9"
+# deepteam imports sentry_sdk at module load but never declares it; it arrived via
+# deepeval, which dropped the dependency in 4.x, so the venv must add it explicitly.
+UNDECLARED_DEEPTEAM_DEPS = ["sentry-sdk"]
 GIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{7,64}$", re.IGNORECASE)
 
 # The scan reads its own key, never the app's: a job-level OPENAI_API_KEY must not
@@ -180,7 +183,8 @@ def start_venv_install(python: str, venv_dir: str, provider: str) -> subprocess.
     script = (
         shlex.quote(python) + " -m venv " + shlex.quote(venv_dir)
         + " && " + shlex.quote(venv_python(venv_dir))
-        + " -m pip install -q --disable-pip-version-check --no-input " + shlex.quote(spec)
+        + " -m pip install -q --disable-pip-version-check --no-input "
+        + " ".join(shlex.quote(p) for p in [spec] + UNDECLARED_DEEPTEAM_DEPS)
     )
     return subprocess.Popen(
         script,
